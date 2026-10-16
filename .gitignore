@@ -1,0 +1,21 @@
+# ===== 素材与大文件（不入库） =====
+video1.mp4
+*.mp4
+*.raw
+
+# 标注工具的导出帧（可用 tools/export_frames.py 重新导出）
+标注工具/frames/
+
+# 运行输出与中间产物
+results/
+results_train/
+
+# 探针输出图
+_probe/*.png
+
+# 本机环境备份（个人机器信息，不入公开库）
+_probe/PATH_用户变量_备份.txt
+
+# Python 缓存
+__pycache__/
+*.pyc

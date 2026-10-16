@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>气泡点标注工具</title>
+<style>
+  body { margin:0; background:#1b1b1f; color:#e8e8e8;
+         font-family:"Microsoft YaHei",system-ui,sans-serif; }
+  #bar { padding:8px 12px; background:#26262c; display:flex; gap:14px;
+         align-items:center; flex-wrap:wrap; font-size:14px; }
+  #bar b { color:#ffd54f; }
+  button { background:#3a3a46; color:#eee; border:1px solid #555;
+           padding:5px 12px; border-radius:4px; cursor:pointer; font-size:13px; }
+  button:hover { background:#4a4a5a; }
+  #wrap { display:flex; justify-content:center; padding:10px; }
+  canvas { background:#000; cursor:crosshair; box-shadow:0 0 18px #000; }
+  #tip { padding:6px 12px; font-size:13px; color:#9fb; line-height:1.7; }
+  .k { background:#444; padding:1px 6px; border-radius:3px; color:#fff; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span>帧 <b id="idx">1</b>/<b id="tot">0</b></span>
+  <span>时间 <b id="ts">-</b> s</span>
+  <span>气泡 <b id="nb">0</b></span>
+  <span>虚影 <b id="ng">0</b></span>
+  <button onclick="go(-1)">&larr; 上一帧</button>
+  <button onclick="go(1)">下一帧 &rarr;</button>
+  <button onclick="toggleEnh()">切换 原图/增强 (E)</button>
+  <button onclick="undo()">撤销 (U)</button>
+  <button onclick="clearFrame()">清空本帧</button>
+  <button onclick="exportJSON()">导出标注 JSON</button>
+</div>
+<div id="wrap"><canvas id="cv"></canvas></div>
+<div id="tip">
+  <b>左键点一下</b> = 标一个气泡中心；<b>按住左键拖动</b> = 同时定出半径（更准）。
+  <b>右键点一下</b> = 标一个"虚影/不是气泡"。<br>
+  快捷键：<span class="k">E</span> 切换原图/增强图 ·
+  <span class="k">A</span>/<span class="k">D</span> 或
+  <span class="k">&larr;</span>/<span class="k">&rarr;</span> 翻帧 ·
+  <span class="k">U</span> 撤销 ·
+  标完记得点"导出标注 JSON"，把文件发我。
+</div>
+<script src="frames.js"></script>
+<script src="preload.js"></script>
+<script>
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+let cur = 0, enh = true;
+let img = new Image();
+let scale = 1;
+const data = {};
+let drag = null;
+
+function D(id){
+  if (!data[id]) data[id] = {bubbles:[], ghosts:[], hist:[]};
+  return data[id];
+}
+
+// 用上一轮的标注预填（只填时间点相同、且本次还没动过的帧）
+function seedPreload(){
+  if (typeof PRELOAD === 'undefined' || typeof FRAMES === 'undefined') return 0;
+  let n = 0;
+  FRAMES.forEach(function(f){
+    const p = PRELOAD[f.id];
+    if (!p || data[f.id]) return;
+    if ((p.bubbles && p.bubbles.length) || (p.ghosts && p.ghosts.length)){
+      data[f.id] = { bubbles: (p.bubbles || []).slice(),
+                     ghosts: (p.ghosts || []).slice(), hist: [] };
+      n++;
+    }
+  });
+  return n;
+}
+
+function load(){
+  const f = FRAMES[cur];
+  const suffix = enh ? '_enh.png' : '_orig.png';
+  img = new Image();
+  img.onload = draw;
+  img.src = 'frames/' + f.id + suffix;
+  document.getElementById('idx').textContent = cur + 1;
+  document.getElementById('tot').textContent = FRAMES.length;
+  document.getElementById('ts').textContent = f.t.toFixed(1);
+  refresh();
+}
+
+function layout(){
+  const maxW = Math.min(window.innerWidth - 40, 1180);
+  const maxH = window.innerHeight - 200;
+  scale = Math.min(maxW / FRAME_W, maxH / FRAME_H);
+  cv.width = Math.round(FRAME_W * scale);
+  cv.height = Math.round(FRAME_H * scale);
+}
+
+function draw(){
+  layout();
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  const d = D(FRAMES[cur].id);
+  ctx.lineWidth = 2;
+  ctx.font = '13px monospace';
+  d.bubbles.forEach(function(b, i){
+    ctx.strokeStyle = '#00e5ff';
+    ctx.beginPath();
+    ctx.arc(b.x * scale, b.y * scale, Math.max(8, b.r * scale), 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.fillStyle = '#00e5ff';
+    ctx.beginPath();
+    ctx.arc(b.x * scale, b.y * scale, 2.5, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillText(String(i + 1), b.x * scale + 5, b.y * scale - 5);
+  });
+  d.ghosts.forEach(function(g){
+    const x = g.x * scale, y = g.y * scale;
+    ctx.strokeStyle = '#ff3b30';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(x - 9, y - 9); ctx.lineTo(x + 9, y + 9);
+    ctx.moveTo(x + 9, y - 9); ctx.lineTo(x - 9, y + 9);
+    ctx.stroke();
+  });
+  if (drag){
+    ctx.strokeStyle = '#ffd54f';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(drag.x * scale, drag.y * scale, Math.max(8, drag.r * scale), 0, 2 * Math.PI);
+    ctx.stroke();
+  }
+  refresh();
+}
+
+function refresh(){
+  const d = D(FRAMES[cur].id);
+  document.getElementById('nb').textContent = d.bubbles.length;
+  document.getElementById('ng').textContent = d.ghosts.length;
+}
+
+function toImg(ev){
+  const r = cv.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) / scale, y: (ev.clientY - r.top) / scale };
+}
+
+cv.addEventListener('mousedown', function(ev){
+  if (ev.button === 2) return;
+  const p = toImg(ev);
+  drag = { x: p.x, y: p.y, r: 20 };
+});
+cv.addEventListener('mousemove', function(ev){
+  if (!drag) return;
+  const p = toImg(ev);
+  drag.r = Math.max(8, Math.hypot(p.x - drag.x, p.y - drag.y));
+  draw();
+});
+window.addEventListener('mouseup', function(){
+  if (!drag) return;
+  const d = D(FRAMES[cur].id);
+  d.bubbles.push({ x: +drag.x.toFixed(1), y: +drag.y.toFixed(1), r: +drag.r.toFixed(1) });
+  d.hist.push('b');
+  drag = null;
+  draw();
+});
+cv.addEventListener('contextmenu', function(ev){
+  ev.preventDefault();
+  const p = toImg(ev);
+  const d = D(FRAMES[cur].id);
+  d.ghosts.push({ x: +p.x.toFixed(1), y: +p.y.toFixed(1) });
+  d.hist.push('g');
+  draw();
+});
+
+function undo(){
+  const d = D(FRAMES[cur].id);
+  const last = d.hist.pop();
+  if (last === 'b') d.bubbles.pop();
+  else if (last === 'g') d.ghosts.pop();
+  draw();
+}
+function clearFrame(){ data[FRAMES[cur].id] = {bubbles:[], ghosts:[], hist:[]}; draw(); }
+function go(n){ cur = Math.max(0, Math.min(FRAMES.length - 1, cur + n)); load(); }
+function toggleEnh(){ enh = !enh; load(); }
+
+window.addEventListener('keydown', function(e){
+  if (e.key === 'a' || e.key === 'ArrowLeft') go(-1);
+  else if (e.key === 'd' || e.key === 'ArrowRight') go(1);
+  else if (e.key === 'e' || e.key === 'E') toggleEnh();
+  else if (e.key === 'u' || e.key === 'U') undo();
+});
+window.addEventListener('resize', draw);
+
+function exportJSON(){
+  const out = { video: 'video1.mp4', frame_w: FRAME_W, frame_h: FRAME_H, annotated: [] };
+  FRAMES.forEach(function(f){
+    const d = data[f.id];
+    if (d && (d.bubbles.length || d.ghosts.length)){
+      out.annotated.push({ id: f.id, time: f.t, bubbles: d.bubbles, ghosts: d.ghosts });
+    }
+  });
+  const blob = new Blob([JSON.stringify(out, null, 1)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'bubble_annotation.json';
+  a.click();
+  alert('已导出 bubble_annotation.json（共标了 ' + out.annotated.length + ' 帧）\n把它发给我就行。');
+}
+
+if (typeof FRAMES === 'undefined'){
+  document.getElementById('tip').innerHTML =
+    '<b style="color:#f66">没找到 frames.js</b> —— 请先运行 ' +
+    '<code>python tools/export_frames.py</code> 生成待标注帧。';
+} else {
+  const seeded = seedPreload();
+  load();
+  if (seeded > 0){
+    document.getElementById('tip').insertAdjacentHTML('afterbegin',
+      '<b style="color:#ffd54f">已从上一轮标注预填了 ' + seeded +
+      ' 帧</b>（时间点相同的），你可以直接改或重标。<br>');
+  }
+}
+</script>
+</body>
+</html>
